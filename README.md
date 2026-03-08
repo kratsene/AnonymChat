@@ -273,3 +273,115 @@ Created as a demonstration of socket programming in Python.
 ---
 
 **Happy chatting!** 🚀💬
+# Terminal Chat System - Quick Start Guide 🚀
+
+## 30-Second Setup
+
+### Terminal 1: Start Server
+```bash
+python3 chat_server.py
+```
+
+### Terminal 2: Start Client 1
+```bash
+python3 chat_client.py
+# Enter username: alice
+```
+
+### Terminal 3: Start Client 2
+```bash
+python3 chat_client.py
+# Enter username: bob
+```
+
+Now type messages and chat! 💬
+
+---
+
+## Features at a Glance
+
+✅ Multi-user real-time chatting  
+✅ Timestamps on all messages  
+✅ User join/leave notifications  
+✅ Built-in commands (/users, /help, /quit)  
+✅ No dependencies needed  
+✅ Cross-platform (Windows, Mac, Linux)  
+
+---
+
+## Available Commands
+
+```
+/users    → See who's online
+/help     → Show all commands
+/quit     → Leave the chat
+/exit     → Leave the chat
+/leave    → Leave the chat
+```
+
+---
+
+## Network Tips
+
+**On same computer:** Just run multiple terminals with `chat_client.py`
+
+**On same WiFi network:** Get server IP and connect:
+```bash
+# Find server IP (run on server machine)
+hostname -I
+
+# Connect from another machine
+python3 chat_client.py --host 192.168.1.100
+```
+
+---
+
+## Output Example
+
+```
+============================================================
+          TERMINAL CHAT SYSTEM - CLIENT
+============================================================
+
+ℹ️  ✅ Connected! Users online: alice, bob
+
+Type your message (or /help for commands):
+
+💬 [bob joined the chat]
+alice: Hello world!
+💬 [charlie joined the chat]
+[12:34:56] bob: Hi there!
+alice: 
+```
+
+---
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| "Connection refused" | Start the server first |
+| "Address already in use" | Change port in code |
+| Messages not showing | Check network/firewall |
+| Slow messages | Normal on slower networks |
+
+---
+
+## File Descriptions
+
+- **chat_server.py** - Runs on one machine, handles connections (start this first!)
+- **chat_client.py** - Connect multiple users (can run on same or different machines)
+- **README.md** - Full documentation with examples
+
+---
+
+## Tips for Best Experience
+
+💡 Use short, clear usernames  
+💡 Keep messages under 200 characters  
+💡 Try `/users` command to see who's online  
+💡 Use Ctrl+C to disconnect gracefully  
+
+---
+
+Enjoy your secure, ad-free, no-account-needed chat! 🎉
