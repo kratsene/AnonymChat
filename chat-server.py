@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-Terminal Chat System - Server Component
-Handles multiple client connections and message broadcasting
+Terminal Chat System - Tor Hidden Service Server
+Runs as an onion service for maximum server anonymity
+
+Features:
+- Runs as Tor hidden service (.onion address)
+- Server IP never exposed
+- Only accessible through Tor
+- Perfect for censorship resistance
 """
 
 import socket
@@ -11,8 +17,74 @@ from datetime import datetime
 from typing import Dict, Set
 import sys
 
+# Try to import Tor control library
+try:
+    from stem.control import Controller
+    from stem.util import term
+    TOR_AVAILABLE = True
+except ImportError:
+    TOR_AVAILABLE = False
+
+
+class TorHiddenService:
+    """Manages Tor hidden service setup"""
+    
+    def __init__(self, local_host="127.0.0.1", local_port=5000, control_port=9051):
+        self.local_host = local_host
+        self.local_port = local_port
+        self.control_port = control_port
+        self.onion_address = None
+        self.controller = None
+        
+    def setup(self):
+        """Setup Tor hidden service"""
+        if not TOR_AVAILABLE:
+            print("⚠️  stem not installed. Install with: pip3 install stem")
+            return False
+        
+        try:
+            print("[TOR] Connecting to Tor control port...")
+            self.controller = Controller.from_port(port=self.control_port)
+            self.controller.authenticate()
+            
+            print("[TOR] Setting up hidden service...")
+            response = self.controller.add_ephemeral_hidden_service(
+                ports={80: (self.local_host, self.local_port)},
+                await_publication=True
+            )
+            
+            self.onion_address = response.service_id
+            print(f"\n{'='*70}")
+            print(f"✅ Tor Hidden Service Created!")
+            print(f"{'='*70}")
+            print(f"🧅 Onion Address: {self.onion_address}.onion")
+            print(f"📍 Local Port: {self.local_port}")
+            print(f"🔐 Clients connect via Tor only")
+            print(f"{'='*70}\n")
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error setting up hidden service: {e}")
+            print(f"💡 Troubleshooting:")
+            print(f"   1. Make sure Tor is running")
+            print(f"   2. Check control port {self.control_port} is open")
+            print(f"   3. Install stem: pip3 install stem")
+            return False
+    
+    def cleanup(self):
+        """Cleanup Tor connection"""
+        if self.controller:
+            try:
+                self.controller.close()
+            except:
+                pass
+
+
 class ChatServer:
-    def __init__(self, host: str = "localhost", port: int = 5000):
+    """Main chat server with Tor support"""
+    
+    def __init__(self, host="localhost", port=5000, use_tor_hidden=False):
         self.host = host
         self.port = port
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -20,12 +92,24 @@ class ChatServer:
         self.lock = threading.Lock()
         self.running = False
         
+        self.tor_service = None
+        if use_tor_hidden:
+            self.tor_service = TorHiddenService(local_host=host, local_port=port)
+        
     def start(self):
         """Start the chat server"""
         try:
+            # Setup Tor if requested
+            if self.tor_service:
+                if not self.tor_service.setup():
+                    print("⚠️  Continuing without Tor hidden service...")
+                    self.tor_service = None
+            
+            # Bind and listen
             self.server.bind((self.host, self.port))
             self.server.listen(5)
             self.running = True
+            
             self.print_status(f"🚀 Server started on {self.host}:{self.port}")
             self.print_status(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             self.print_status("=" * 50)
@@ -68,7 +152,11 @@ class ChatServer:
             
             # Announce user join
             join_msg = f"[{username} joined the chat]"
-            self.print_status(f"✅ {username} connected from {address[0]}:{address[1]}")
+            connection_type = f"via {address[0]}:{address[1]}"
+            if self.tor_service and self.tor_service.onion_address:
+                connection_type = "via Tor"
+            
+            self.print_status(f"✅ {username} connected ({connection_type})")
             self.broadcast(join_msg, exclude=client_socket, is_system=True)
             
             # Send user list
@@ -128,7 +216,7 @@ class ChatServer:
             client_socket.send(f"Unknown command: {cmd}. Type /help for available commands.".encode('utf-8'))
     
     def broadcast_message(self, username: str, message: str):
-        """Broadcast a message from a user to all clients"""
+        """Broadcast a message from a user"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_msg = f"[{timestamp}] {username}: {message}"
         self.broadcast(formatted_msg)
@@ -150,7 +238,7 @@ class ChatServer:
                     pass
     
     def print_status(self, message: str):
-        """Print server status message"""
+        """Print server status"""
         print(f"[SERVER] {message}")
     
     def print_error(self, message: str):
@@ -161,21 +249,101 @@ class ChatServer:
         """Stop the server"""
         self.running = False
         self.print_status("Shutting down server...")
+        
+        if self.tor_service:
+            self.tor_service.cleanup()
+        
         try:
             self.server.close()
         except:
             pass
 
 
-if __name__ == "__main__":
-    print("\n" + "="*50)
+def main():
+    """Main entry point"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="Terminal Chat System - Tor Hidden Service Server",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+USAGE:
+
+  Regular server:
+    python3 chat_server_onion.py
+
+  With Tor hidden service (requires Tor running):
+    python3 chat_server_onion.py --hidden-service
+
+  Custom port:
+    python3 chat_server_onion.py --port 8000
+
+  Both:
+    python3 chat_server_onion.py --hidden-service --port 8000
+
+SETUP FOR TOR HIDDEN SERVICE:
+
+  1. Install dependencies:
+     pip3 install stem --break-system-packages
+
+  2. Start Tor (requires ControlPort 9051):
+     tor --ControlPort 9051 --CookieAuthentication 1
+
+  3. Run server with hidden service:
+     python3 chat_server_onion.py --hidden-service
+
+  4. Copy the .onion address and share with clients
+
+  5. Clients connect with:
+     python3 chat_client_tor.py --host <address>.onion
+
+SECURITY:
+
+  ✅ Hidden Service keeps server IP private
+  ✅ Only accessible through Tor
+  ✅ Maximum server anonymity
+  ✅ Resistant to censorship
+        """
+    )
+    
+    parser.add_argument("--host",
+                       default="localhost",
+                       help="Bind to host (default: localhost)")
+    parser.add_argument("--port",
+                       type=int,
+                       default=5000,
+                       help="Port (default: 5000)")
+    parser.add_argument("--hidden-service",
+                       action="store_true",
+                       help="Run as Tor hidden service (requires Tor + stem)")
+    
+    args = parser.parse_args()
+    
+    # Check dependencies for hidden service
+    if args.hidden_service and not TOR_AVAILABLE:
+        print("\n⚠️  WARNING: stem not installed!")
+        print("   Install with: pip3 install stem --break-system-packages")
+        print("   Continuing without hidden service...\n")
+        args.hidden_service = False
+    
+    print("\n" + "="*70)
     print("     TERMINAL CHAT SYSTEM - SERVER")
-    print("="*50 + "\n")
+    if args.hidden_service:
+        print("     🧅 TOR HIDDEN SERVICE MODE 🧅")
+    print("="*70 + "\n")
     
     try:
-        server = ChatServer()
+        server = ChatServer(
+            host=args.host,
+            port=args.port,
+            use_tor_hidden=args.hidden_service
+        )
         server.start()
     except KeyboardInterrupt:
         print("\n\nServer interrupted by user")
     except Exception as e:
         print(f"Fatal error: {e}")
+
+
+if __name__ == "__main__":
+    main()
