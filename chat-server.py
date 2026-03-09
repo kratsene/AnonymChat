@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
-Terminal Chat System - Tor Hidden Service Server
-Runs as an onion service for maximum server anonymity
+Terminal Chat System - Secure Server with Room Authentication
+Generates unique 10-digit alphanumeric codes for chat room access
 
 Features:
-- Runs as Tor hidden service (.onion address)
-- Server IP never exposed
-- Only accessible through Tor
+- Unique 10-digit room authentication codes
+- Secure client verification
+- Support for Tor hidden service (.onion address)
+- Server IP never exposed when using Tor
 - Perfect for censorship resistance
 """
 
 import socket
 import threading
 import time
+import string
+import random
 from datetime import datetime
 from typing import Dict, Set
 import sys
@@ -24,6 +27,25 @@ try:
     TOR_AVAILABLE = True
 except ImportError:
     TOR_AVAILABLE = False
+
+
+class RoomCodeGenerator:
+    """Generates and manages unique room authentication codes"""
+    
+    @staticmethod
+    def generate_code(length=10):
+        """
+        Generate a unique 10-digit alphanumeric code
+        
+        Args:
+            length (int): Length of code (default: 10)
+        
+        Returns:
+            str: Random alphanumeric code (e.g., "A7B2K9F4M1")
+        """
+        chars = string.ascii_uppercase + string.digits
+        code = ''.join(random.choice(chars) for _ in range(length))
+        return code
 
 
 class TorHiddenService:
@@ -39,7 +61,7 @@ class TorHiddenService:
     def setup(self):
         """Setup Tor hidden service"""
         if not TOR_AVAILABLE:
-            print("⚠️  stem not installed. Install with: pip3 install stem")
+            print("⚠️  stem not installed. Install with: pip3 install stem --break-system-packages")
             return False
         
         try:
@@ -67,9 +89,9 @@ class TorHiddenService:
         except Exception as e:
             print(f"❌ Error setting up hidden service: {e}")
             print(f"💡 Troubleshooting:")
-            print(f"   1. Make sure Tor is running")
-            print(f"   2. Check control port {self.control_port} is open")
-            print(f"   3. Install stem: pip3 install stem")
+            print(f"   1. Make sure Tor is running: tor --ControlPort 9051 --CookieAuthentication 1")
+            print(f"   2. Check control port {self.control_port} is accessible")
+            print(f"   3. Install stem: pip3 install stem --break-system-packages")
             return False
     
     def cleanup(self):
@@ -82,23 +104,30 @@ class TorHiddenService:
 
 
 class ChatServer:
-    """Main chat server with Tor support"""
+    """Main chat server with room authentication"""
     
-    def __init__(self, host="localhost", port=5000, use_tor_hidden=False):
+    def __init__(self, host="127.0.0.1", port=5000, use_tor_hidden=False):
         self.host = host
         self.port = port
-        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server = None
         self.clients: Dict[socket.socket, str] = {}
         self.lock = threading.Lock()
         self.running = False
         
+        # Room authentication
+        self.room_code = RoomCodeGenerator.generate_code(10)
+        
         self.tor_service = None
         if use_tor_hidden:
             self.tor_service = TorHiddenService(local_host=host, local_port=port)
-        
+    
     def start(self):
         """Start the chat server"""
         try:
+            # Create server socket
+            self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            
             # Setup Tor if requested
             if self.tor_service:
                 if not self.tor_service.setup():
@@ -110,9 +139,12 @@ class ChatServer:
             self.server.listen(5)
             self.running = True
             
+            self.print_header()
             self.print_status(f"🚀 Server started on {self.host}:{self.port}")
             self.print_status(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            self.print_status("=" * 50)
+            self.print_status("")
+            self.print_room_info()
+            self.print_status("=" * 70)
             self.print_status("Waiting for connections...\n")
             
             while self.running:
@@ -130,65 +162,100 @@ class ChatServer:
                     if self.running:
                         self.print_error(f"Error accepting connection: {e}")
                     
-        except Exception as e:
+        except OSError as e:
             self.print_error(f"Failed to start server: {e}")
+            if "Address already in use" in str(e):
+                self.print_error(f"Port {self.port} is already in use. Try a different port with --port option")
+        except Exception as e:
+            self.print_error(f"Fatal error: {e}")
         finally:
             self.stop()
     
     def handle_client(self, client_socket: socket.socket, address: tuple):
-        """Handle individual client connections"""
+        """Handle individual client connections with authentication"""
         username = None
         try:
-            # Request username
+            # Step 1: Request room code
+            client_socket.send(b"CODE:")
+            received_code = client_socket.recv(1024).decode('utf-8').strip()
+            
+            if received_code != self.room_code:
+                self.print_error(f"❌ Invalid room code from {address[0]}:{address[1]} (provided: {received_code})")
+                client_socket.send(b"INVALID_CODE")
+                client_socket.close()
+                return
+            
+            # Code is valid, send confirmation
+            client_socket.send(b"CODE_OK")
+            
+            # Step 2: Request username
             client_socket.send(b"USERNAME:")
             username = client_socket.recv(1024).decode('utf-8').strip()
             
-            if not username:
+            if not username or len(username) == 0:
+                client_socket.send(b"INVALID_USERNAME")
+                client_socket.close()
+                return
+            
+            if len(username) > 20:
+                client_socket.send(b"USERNAME_LONG")
                 client_socket.close()
                 return
             
             with self.lock:
+                # Check if username already exists
+                if username in self.clients.values():
+                    client_socket.send(b"USERNAME_TAKEN")
+                    client_socket.close()
+                    return
+                
                 self.clients[client_socket] = username
             
-            # Announce user join
-            join_msg = f"[{username} joined the chat]"
-            connection_type = f"via {address[0]}:{address[1]}"
-            if self.tor_service and self.tor_service.onion_address:
-                connection_type = "via Tor"
+            # Send confirmation
+            client_socket.send(b"USERNAME_OK")
             
-            self.print_status(f"✅ {username} connected ({connection_type})")
+            # Announce user join
+            join_msg = f"✅ {username} joined the chat"
+            connection_type = f"(IP: {address[0]}:{address[1]})"
+            if self.tor_service and self.tor_service.onion_address:
+                connection_type = "(via Tor 🧅)"
+            
+            self.print_status(f"✅ {username} connected {connection_type}")
             self.broadcast(join_msg, exclude=client_socket, is_system=True)
             
             # Send user list
-            user_list = ", ".join(self.clients.values())
+            user_list = ", ".join(sorted(self.clients.values()))
             client_socket.send(f"USERS:{user_list}".encode('utf-8'))
             
             # Main message loop
             while self.running:
-                message = client_socket.recv(1024).decode('utf-8').strip()
-                
-                if not message:
+                try:
+                    message = client_socket.recv(1024).decode('utf-8').strip()
+                    
+                    if not message:
+                        continue
+                    
+                    if message.lower() in ['/quit', '/exit', '/leave']:
+                        break
+                    
+                    if message.startswith('/'):
+                        self.handle_command(client_socket, message, username)
+                    else:
+                        self.broadcast_message(username, message)
+                except socket.timeout:
                     continue
-                
-                if message.lower() in ['/quit', '/exit', '/leave']:
+                except ConnectionResetError:
                     break
-                
-                if message.startswith('/'):
-                    self.handle_command(client_socket, message, username)
-                else:
-                    self.broadcast_message(username, message)
         
-        except ConnectionResetError:
-            pass
         except Exception as e:
-            if self.running:
-                self.print_error(f"Error handling client: {e}")
+            if self.running and str(e) != "":
+                self.print_error(f"Error handling client {address[0]}: {e}")
         finally:
             if client_socket in self.clients:
                 with self.lock:
                     username = self.clients.pop(client_socket, username)
                 if username:
-                    leave_msg = f"[{username} left the chat]"
+                    leave_msg = f"👋 {username} left the chat"
                     self.print_status(f"❌ {username} disconnected")
                     self.broadcast(leave_msg, is_system=True)
             
@@ -202,25 +269,29 @@ class ChatServer:
         cmd = command.lower().strip()
         
         if cmd == '/users':
-            user_list = ", ".join(self.clients.values())
-            client_socket.send(f"Users online: {user_list}".encode('utf-8'))
+            user_list = ", ".join(sorted(self.clients.values()))
+            response = f"👥 Users online ({len(self.clients)}): {user_list}"
+            client_socket.send(response.encode('utf-8'))
         elif cmd == '/help':
             help_text = (
-                "Available commands:\n"
-                "  /users  - List all online users\n"
-                "  /help   - Show this help message\n"
-                "  /quit   - Disconnect from chat"
+                "📋 Available Commands:\n"
+                "  /users   - List all online users\n"
+                "  /help    - Show this help message\n"
+                "  /quit    - Disconnect from chat"
             )
             client_socket.send(help_text.encode('utf-8'))
+        elif cmd == '/count':
+            count = len(self.clients)
+            client_socket.send(f"👥 Total users connected: {count}".encode('utf-8'))
         else:
-            client_socket.send(f"Unknown command: {cmd}. Type /help for available commands.".encode('utf-8'))
+            client_socket.send(f"❌ Unknown command: {cmd}. Type /help for available commands.".encode('utf-8'))
     
     def broadcast_message(self, username: str, message: str):
         """Broadcast a message from a user"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_msg = f"[{timestamp}] {username}: {message}"
         self.broadcast(formatted_msg)
-        self.print_status(f"📨 {formatted_msg}")
+        self.print_status(f"💬 {formatted_msg}")
     
     def broadcast(self, message: str, exclude: socket.socket = None, is_system: bool = False):
         """Send message to all connected clients"""
@@ -234,12 +305,31 @@ class ChatServer:
                     else:
                         prefix = "MSG:"
                     client_socket.send(f"{prefix}{message}".encode('utf-8'))
-                except:
+                except (BrokenPipeError, ConnectionResetError):
                     pass
+                except Exception:
+                    pass
+    
+    def print_header(self):
+        """Print server header"""
+        print("\n" + "="*70)
+        print("     TERMINAL CHAT SYSTEM - SERVER")
+        if self.tor_service:
+            print("     🧅 TOR HIDDEN SERVICE MODE 🧅")
+        print("="*70)
+    
+    def print_room_info(self):
+        """Print room authentication code"""
+        print(f"\n🔐 ROOM AUTHENTICATION CODE: {self.room_code}")
+        print(f"   Share this code with clients to join the chat room")
+        print(f"   (Keep this code secret!)\n")
     
     def print_status(self, message: str):
         """Print server status"""
-        print(f"[SERVER] {message}")
+        if message.strip():
+            print(f"[SERVER] {message}")
+        else:
+            print()
     
     def print_error(self, message: str):
         """Print error message"""
@@ -254,9 +344,12 @@ class ChatServer:
             self.tor_service.cleanup()
         
         try:
-            self.server.close()
+            if self.server:
+                self.server.close()
         except:
             pass
+        
+        self.print_status("Server stopped")
 
 
 def main():
@@ -264,51 +357,58 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="Terminal Chat System - Tor Hidden Service Server",
+        description="Terminal Chat System - Secure Server with Room Authentication",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-USAGE:
+USAGE EXAMPLES:
 
-  Regular server:
-    python3 chat_server_onion.py
+  Basic server (recommended first time):
+    python3 server.py
 
-  With Tor hidden service (requires Tor running):
-    python3 chat_server_onion.py --hidden-service
+  With Tor hidden service (requires Tor + stem):
+    python3 server.py --hidden-service
 
   Custom port:
-    python3 chat_server_onion.py --port 8000
+    python3 server.py --port 8000
 
-  Both:
-    python3 chat_server_onion.py --hidden-service --port 8000
+  Custom host and port:
+    python3 server.py --host 0.0.0.0 --port 8000
 
 SETUP FOR TOR HIDDEN SERVICE:
 
-  1. Install dependencies:
+  1. Install stem:
      pip3 install stem --break-system-packages
 
-  2. Start Tor (requires ControlPort 9051):
+  2. Start Tor with ControlPort enabled:
      tor --ControlPort 9051 --CookieAuthentication 1
 
   3. Run server with hidden service:
-     python3 chat_server_onion.py --hidden-service
+     python3 server.py --hidden-service
 
   4. Copy the .onion address and share with clients
 
   5. Clients connect with:
-     python3 chat_client_tor.py --host <address>.onion
+     python3 client.py --host <address>.onion
+
+AUTHENTICATION:
+
+  ✅ Server generates a unique 10-digit room code
+  ✅ Share code with authorized users only
+  ✅ Clients must provide code to join
+  ✅ All other users are rejected
 
 SECURITY:
 
+  ✅ Room code prevents unauthorized access
   ✅ Hidden Service keeps server IP private
-  ✅ Only accessible through Tor
-  ✅ Maximum server anonymity
+  ✅ Maximum anonymity with Tor
   ✅ Resistant to censorship
         """
     )
     
     parser.add_argument("--host",
-                       default="localhost",
-                       help="Bind to host (default: localhost)")
+                       default="127.0.0.1",
+                       help="Bind to host (default: 127.0.0.1)")
     parser.add_argument("--port",
                        type=int,
                        default=5000,
@@ -326,12 +426,6 @@ SECURITY:
         print("   Continuing without hidden service...\n")
         args.hidden_service = False
     
-    print("\n" + "="*70)
-    print("     TERMINAL CHAT SYSTEM - SERVER")
-    if args.hidden_service:
-        print("     🧅 TOR HIDDEN SERVICE MODE 🧅")
-    print("="*70 + "\n")
-    
     try:
         server = ChatServer(
             host=args.host,
@@ -340,9 +434,11 @@ SECURITY:
         )
         server.start()
     except KeyboardInterrupt:
-        print("\n\nServer interrupted by user")
+        print("\n\n👋 Server interrupted by user")
+        sys.exit(0)
     except Exception as e:
         print(f"Fatal error: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
