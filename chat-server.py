@@ -139,10 +139,17 @@ class ChatServer:
     def handle_client(self, client_socket: socket.socket, address: tuple):
         username = None
         try:
-            client_socket.settimeout(60)
+            client_socket.settimeout(120)  # .onion connections need more time
 
-            client_socket.send(b"CODE:")
-            received_code = client_socket.recv(1024).decode("utf-8").strip()
+            # Send code prompt and wait — Tor circuit probes connect then send nothing,
+            # so we catch TimeoutError here quietly instead of crashing the thread
+            try:
+                client_socket.send(b"CODE:")
+                received_code = client_socket.recv(1024).decode("utf-8").strip()
+            except (socket.timeout, TimeoutError, OSError):
+                # Silent drop — Tor probe or slow connection that never sent data
+                client_socket.close()
+                return
 
             if received_code != self.room_code:
                 client_socket.send(b"INVALID_CODE")
@@ -151,8 +158,13 @@ class ChatServer:
                 return
 
             client_socket.send(b"CODE_OK")
-            client_socket.send(b"USERNAME:")
-            username = client_socket.recv(1024).decode("utf-8").strip()
+
+            try:
+                client_socket.send(b"USERNAME:")
+                username = client_socket.recv(1024).decode("utf-8").strip()
+            except (socket.timeout, TimeoutError, OSError):
+                client_socket.close()
+                return
 
             if not username or len(username) > 20 or " " in username:
                 client_socket.send(b"INVALID_USERNAME")
